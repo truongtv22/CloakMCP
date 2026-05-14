@@ -918,7 +918,7 @@ def main():
     parser.add_argument(
         "--caps",
         type=str,
-        default="",
+        default="all",
         help="Comma-separated capabilities to enable: network, cookies, pdf, console, all",
     )
     parser.add_argument(
