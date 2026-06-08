@@ -1,11 +1,23 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# CloakBrowserMCP — one-command setup
-# Usage: curl -fsSL https://raw.githubusercontent.com/overtimepog/CloakMCP/main/setup.sh | bash
+# CloakMCP installer for Codex.
+# Usage:
+#   curl -fsSL https://raw.githubusercontent.com/truongtv22/CloakMCP/main/setup.sh | bash
+#
+# Optional environment variables:
+#   CLOAKMCP_REPO=https://github.com/truongtv22/CloakMCP.git
+#   CLOAKMCP_DIR="$HOME/.codex/mcp/cloakmcp"
+#   CODEX_CONFIG="$HOME/.codex/config.toml"
+#   CLOAKMCP_SERVER_NAME=cloakmcp
+#   CLOAKMCP_RUN_TESTS=1
+#   CLOAKMCP_SKIP_BINARY=1
+#   CLOAKMCP_SKIP_PLAYWRIGHT_DEPS=1
 
-REPO="https://github.com/overtimepog/CloakMCP.git"
-INSTALL_DIR="${CLOAKMCP_DIR:-$HOME/.cloakbrowsermcp}"
+REPO="${CLOAKMCP_REPO:-https://github.com/truongtv22/CloakMCP.git}"
+INSTALL_DIR="${CLOAKMCP_DIR:-$HOME/.codex/mcp/cloakmcp}"
+CODEX_CONFIG="${CODEX_CONFIG:-$HOME/.codex/config.toml}"
+SERVER_NAME="${CLOAKMCP_SERVER_NAME:-cloakmcp}"
 
 RED='\033[0;31m'
 GREEN='\033[0;32m'
@@ -14,149 +26,196 @@ CYAN='\033[0;36m'
 BOLD='\033[1m'
 NC='\033[0m'
 
-info()  { echo -e "${CYAN}[INFO]${NC} $*"; }
-ok()    { echo -e "${GREEN}[OK]${NC}   $*"; }
-warn()  { echo -e "${YELLOW}[WARN]${NC} $*"; }
-fail()  { echo -e "${RED}[FAIL]${NC} $*"; exit 1; }
+info() { printf "%b[INFO]%b %s\n" "$CYAN" "$NC" "$*"; }
+ok() { printf "%b[OK]%b   %s\n" "$GREEN" "$NC" "$*"; }
+warn() { printf "%b[WARN]%b %s\n" "$YELLOW" "$NC" "$*"; }
+fail() { printf "%b[FAIL]%b %s\n" "$RED" "$NC" "$*" >&2; exit 1; }
 
-echo ""
-echo -e "${BOLD}╔══════════════════════════════════════════╗${NC}"
-echo -e "${BOLD}║        CloakBrowserMCP Setup             ║${NC}"
-echo -e "${BOLD}║  Stealth browser automation for AI       ║${NC}"
-echo -e "${BOLD}╚══════════════════════════════════════════╝${NC}"
-echo ""
+print_header() {
+    printf "\n%b╔══════════════════════════════════════════╗%b\n" "$BOLD" "$NC"
+    printf "%b║        CloakMCP Setup for Codex          ║%b\n" "$BOLD" "$NC"
+    printf "%b║  Stealth browser automation MCP          ║%b\n" "$BOLD" "$NC"
+    printf "%b╚══════════════════════════════════════════╝%b\n\n" "$BOLD" "$NC"
+}
 
-# ─── Check Python ───────────────────────────────────────────────────────
-info "Checking Python..."
-PYTHON=""
-for cmd in python3.13 python3.12 python3.11 python3.10 python3 python; do
-    if command -v "$cmd" &>/dev/null; then
+find_python() {
+    local cmd ver major minor
+    for cmd in python3.13 python3.12 python3.11 python3.10 python3 python; do
+        if ! command -v "$cmd" >/dev/null 2>&1; then
+            continue
+        fi
+
         ver=$("$cmd" -c "import sys; print(f'{sys.version_info.major}.{sys.version_info.minor}')" 2>/dev/null || true)
         major=$("$cmd" -c "import sys; print(sys.version_info.major)" 2>/dev/null || echo 0)
         minor=$("$cmd" -c "import sys; print(sys.version_info.minor)" 2>/dev/null || echo 0)
-        if [ "$major" -ge 3 ] && [ "$minor" -ge 10 ]; then
-            PYTHON="$cmd"
-            ok "Found $cmd ($ver)"
-            break
+        if [ "$major" -eq 3 ] && [ "$minor" -ge 10 ]; then
+            printf "%s" "$cmd"
+            return 0
+        fi
+        warn "$cmd is $ver; need Python 3.10+"
+    done
+    return 1
+}
+
+clone_or_update_repo() {
+    mkdir -p "$(dirname "$INSTALL_DIR")"
+
+    if [ -d "$INSTALL_DIR/.git" ]; then
+        info "Updating existing install at $INSTALL_DIR"
+        git -C "$INSTALL_DIR" remote set-url origin "$REPO"
+        git -C "$INSTALL_DIR" fetch --quiet origin main
+        git -C "$INSTALL_DIR" checkout --quiet main
+        git -C "$INSTALL_DIR" pull --ff-only --quiet origin main
+        ok "Repository updated"
+        return
+    fi
+
+    if [ -e "$INSTALL_DIR" ]; then
+        fail "$INSTALL_DIR exists but is not a git repository. Move it away or set CLOAKMCP_DIR."
+    fi
+
+    info "Cloning $REPO to $INSTALL_DIR"
+    git clone --quiet "$REPO" "$INSTALL_DIR"
+    ok "Repository cloned"
+}
+
+install_python_package() {
+    local python="$1"
+    local venv_dir="$INSTALL_DIR/.venv"
+
+    if [ ! -d "$venv_dir" ]; then
+        info "Creating virtual environment"
+        "$python" -m venv "$venv_dir"
+        ok "venv created at $venv_dir"
+    else
+        ok "venv already exists"
+    fi
+
+    local venv_python="$venv_dir/bin/python"
+    [ -x "$venv_python" ] || fail "venv python not found at $venv_python"
+
+    info "Installing cloakbrowsermcp"
+    "$venv_python" -m pip install --upgrade pip --quiet
+    "$venv_python" -m pip install -e ".[dev]" --quiet
+    ok "Python package installed"
+}
+
+prepare_browser_runtime() {
+    local venv_python="$INSTALL_DIR/.venv/bin/python"
+
+    if [ "${CLOAKMCP_SKIP_BINARY:-0}" = "1" ]; then
+        warn "Skipping CloakBrowser binary download because CLOAKMCP_SKIP_BINARY=1"
+    else
+        info "Preparing CloakBrowser stealth binary"
+        if "$venv_python" -c "from cloakbrowser.download import ensure_binary; ensure_binary()"; then
+            ok "CloakBrowser binary ready"
         else
-            warn "$cmd is $ver (need 3.10+), skipping"
+            warn "Binary download failed; cloakbrowser may auto-download on first launch"
         fi
     fi
-done
-[ -z "$PYTHON" ] && fail "Python 3.10+ is required. Install from https://python.org/downloads/"
 
-# ─── Check git ──────────────────────────────────────────────────────────
-info "Checking git..."
-command -v git &>/dev/null || fail "git not found. Install from https://git-scm.com/"
-ok "git available"
-
-# ─── Clone or update ───────────────────────────────────────────────────
-if [ -d "$INSTALL_DIR/.git" ]; then
-    info "Updating existing install at $INSTALL_DIR..."
-    cd "$INSTALL_DIR"
-    git pull origin main --quiet
-    ok "Updated to latest"
-else
-    info "Cloning CloakBrowserMCP to $INSTALL_DIR..."
-    git clone --quiet "$REPO" "$INSTALL_DIR"
-    ok "Cloned"
-fi
-
-cd "$INSTALL_DIR"
-
-# ─── Create venv ────────────────────────────────────────────────────────
-VENV_DIR="$INSTALL_DIR/.venv"
-if [ ! -d "$VENV_DIR" ]; then
-    info "Creating virtual environment..."
-    "$PYTHON" -m venv "$VENV_DIR"
-    ok "venv created at $VENV_DIR"
-else
-    ok "venv already exists"
-fi
-
-# Activate venv for the rest of the script
-source "$VENV_DIR/bin/activate"
-PYTHON="python"  # now points to the venv python
-
-# ─── Install package ───────────────────────────────────────────────────
-info "Installing cloakbrowsermcp and dependencies..."
-"$PYTHON" -m pip install --upgrade pip --quiet 2>&1 | grep -v "^\[notice\]" || true
-"$PYTHON" -m pip install -e ".[dev]" --quiet 2>&1 | grep -v "^\[notice\]" || true
-ok "Package installed"
-
-# ─── Download CloakBrowser binary ──────────────────────────────────────
-info "Downloading CloakBrowser stealth binary (~200MB, cached)..."
-if "$PYTHON" -c "from cloakbrowser.download import ensure_binary; ensure_binary()" 2>&1; then
-    ok "CloakBrowser binary ready"
-else
-    warn "Binary download failed — will auto-download on first launch"
-fi
-
-# ─── Install Playwright system deps ────────────────────────────────────
-info "Installing Playwright system dependencies..."
-"$PYTHON" -m playwright install-deps chromium 2>/dev/null || warn "Could not install system deps (may need: sudo playwright install-deps chromium)"
-
-# ─── Run tests ──────────────────────────────────────────────────────────
-info "Running tests..."
-TEST_OUTPUT=$("$PYTHON" -m pytest tests/ -q --tb=line 2>&1)
-echo "$TEST_OUTPUT" | tail -3
-if echo "$TEST_OUTPUT" | grep -q "passed"; then
-    ok "All tests passed"
-else
-    warn "Some tests failed — review output above"
-fi
-
-# ─── Write wrapper script ──────────────────────────────────────────────
-WRAPPER="$INSTALL_DIR/bin/cloakbrowsermcp"
-mkdir -p "$INSTALL_DIR/bin"
-cat > "$WRAPPER" << 'WRAPPER_EOF'
-#!/usr/bin/env bash
-SCRIPT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
-source "$SCRIPT_DIR/.venv/bin/activate"
-exec python -m cloakbrowsermcp.server "$@"
-WRAPPER_EOF
-chmod +x "$WRAPPER"
-
-# ─── Shell PATH hint ───────────────────────────────────────────────────
-BIN_DIR="$INSTALL_DIR/bin"
-if echo "$PATH" | tr ':' '\n' | grep -qx "$BIN_DIR"; then
-    ok "cloakbrowsermcp is on your PATH"
-else
-    # Detect shell config file
-    SHELL_RC=""
-    case "$SHELL" in
-        */zsh)  SHELL_RC="$HOME/.zshrc" ;;
-        */bash) SHELL_RC="$HOME/.bashrc" ;;
-        */fish) SHELL_RC="$HOME/.config/fish/config.fish" ;;
-    esac
-
-    if [ -n "$SHELL_RC" ] && ! grep -q "$BIN_DIR" "$SHELL_RC" 2>/dev/null; then
-        echo "" >> "$SHELL_RC"
-        echo "# CloakBrowserMCP" >> "$SHELL_RC"
-        echo "export PATH=\"$BIN_DIR:\$PATH\"" >> "$SHELL_RC"
-        ok "Added $BIN_DIR to PATH in $SHELL_RC"
-        info "Run: source $SHELL_RC  (or open a new terminal)"
-    else
-        warn "Add to your PATH: export PATH=\"$BIN_DIR:\$PATH\""
+    if [ "${CLOAKMCP_SKIP_PLAYWRIGHT_DEPS:-0}" = "1" ]; then
+        warn "Skipping Playwright system deps because CLOAKMCP_SKIP_PLAYWRIGHT_DEPS=1"
+        return
     fi
-fi
 
-# ─── Done ───────────────────────────────────────────────────────────────
-echo ""
-echo -e "${GREEN}${BOLD}✓ CloakBrowserMCP is ready!${NC}"
-echo ""
-echo -e "  ${BOLD}Run the server:${NC}"
-echo "    cloakbrowsermcp"
-echo ""
-echo -e "  ${BOLD}Claude Desktop / Claude Code config:${NC}"
-echo "    {"
-echo "      \"mcpServers\": {"
-echo "        \"cloakbrowser\": {"
-echo "          \"command\": \"$WRAPPER\""
-echo "        }"
-echo "      }"
-echo "    }"
-echo ""
-echo -e "  ${BOLD}Run tests:${NC}"
-echo "    cd $INSTALL_DIR && source .venv/bin/activate && pytest"
-echo ""
+    info "Installing Playwright Chromium dependencies when supported"
+    "$venv_python" -m playwright install-deps chromium 2>/dev/null \
+        || warn "Could not install system deps automatically. If needed, run: $venv_python -m playwright install-deps chromium"
+}
+
+run_smoke_tests() {
+    local venv_python="$INSTALL_DIR/.venv/bin/python"
+
+    if [ "${CLOAKMCP_RUN_TESTS:-0}" != "1" ]; then
+        info "Skipping tests by default. Set CLOAKMCP_RUN_TESTS=1 to run smoke tests."
+        return
+    fi
+
+    info "Running smoke tests"
+    "$venv_python" -m pytest tests/test_session.py -q
+    "$venv_python" -m ruff check cloakbrowsermcp tests/test_session.py
+    ok "Smoke tests passed"
+}
+
+write_wrapper() {
+    local wrapper="$INSTALL_DIR/bin/cloakbrowsermcp"
+    mkdir -p "$INSTALL_DIR/bin"
+    cat > "$wrapper" <<EOF
+#!/usr/bin/env bash
+exec "$INSTALL_DIR/.venv/bin/python" -m cloakbrowsermcp.server "\$@"
+EOF
+    chmod +x "$wrapper"
+    ok "Wrapper written to $wrapper"
+}
+
+escape_sed_replacement() {
+    printf "%s" "$1" | sed 's/[\/&]/\\&/g'
+}
+
+write_codex_config() {
+    local venv_python="$INSTALL_DIR/.venv/bin/python"
+    local config_dir
+    config_dir="$(dirname "$CODEX_CONFIG")"
+    mkdir -p "$config_dir"
+    touch "$CODEX_CONFIG"
+
+    local tmp_file escaped_server
+    tmp_file="$(mktemp)"
+    escaped_server="$(escape_sed_replacement "$SERVER_NAME")"
+
+    awk -v server="$SERVER_NAME" '
+        $0 == "[mcp_servers." server "]" { skip = 1; next }
+        skip && /^\[/ { skip = 0 }
+        !skip { print }
+    ' "$CODEX_CONFIG" > "$tmp_file"
+
+    {
+        cat "$tmp_file"
+        printf "\n[mcp_servers.%s]\n" "$SERVER_NAME"
+        printf "command = \"%s\"\n" "$venv_python"
+        printf "args = [\"-m\", \"cloakbrowsermcp.server\", \"--caps\", \"all\"]\n"
+    } > "$CODEX_CONFIG"
+    rm -f "$tmp_file"
+
+    ok "Codex MCP config updated at $CODEX_CONFIG"
+    info "Server name: $escaped_server"
+}
+
+print_done() {
+    local wrapper="$INSTALL_DIR/bin/cloakbrowsermcp"
+
+    printf "\n%b%s%b\n\n" "$GREEN$BOLD" "CloakMCP is ready." "$NC"
+    printf "%bCodex config:%b %s\n" "$BOLD" "$NC" "$CODEX_CONFIG"
+    printf "%bServer:%b %s\n" "$BOLD" "$NC" "$SERVER_NAME"
+    printf "%bCommand:%b %s/.venv/bin/python -m cloakbrowsermcp.server --caps all\n" "$BOLD" "$NC" "$INSTALL_DIR"
+    printf "%bWrapper:%b %s\n\n" "$BOLD" "$NC" "$wrapper"
+    printf "Restart Codex, then verify:\n"
+    printf "  codex mcp list\n\n"
+    printf "Expected tools include:\n"
+    printf "  cloak_launch(cdp_endpoint=...)\n"
+    printf "  cloak_new_page(page_id=..., same_context=true)\n"
+    printf "  cloak_register_existing_pages()\n\n"
+}
+
+main() {
+    print_header
+
+    info "Checking prerequisites"
+    command -v git >/dev/null 2>&1 || fail "git not found. Install git first."
+    local python
+    python="$(find_python)" || fail "Python 3.10+ is required."
+    ok "Using Python: $python"
+
+    clone_or_update_repo
+    cd "$INSTALL_DIR"
+
+    install_python_package "$python"
+    prepare_browser_runtime
+    run_smoke_tests
+    write_wrapper
+    write_codex_config
+    print_done
+}
+
+main "$@"
