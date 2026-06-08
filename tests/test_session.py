@@ -13,7 +13,7 @@ class TestSessionConfig:
         cfg = SessionConfig()
         assert cfg.headless is True
         assert cfg.proxy is None
-        assert cfg.humanize is False
+        assert cfg.humanize is True
         assert cfg.human_preset == "default"
         assert cfg.stealth_args is True
         assert cfg.timezone is None
@@ -21,6 +21,7 @@ class TestSessionConfig:
         assert cfg.geoip is False
         assert cfg.viewport == {"width": 1920, "height": 947}
         assert cfg.extra_args == []
+        assert cfg.cdp_endpoint is None
 
     def test_custom_config(self):
         cfg = SessionConfig(
@@ -49,6 +50,10 @@ class TestSessionConfig:
     def test_persistent_profile_config(self):
         cfg = SessionConfig(user_data_dir="/tmp/profile")
         assert cfg.user_data_dir == "/tmp/profile"
+
+    def test_cdp_endpoint_config(self):
+        cfg = SessionConfig(cdp_endpoint="http://127.0.0.1:9222")
+        assert cfg.cdp_endpoint == "http://127.0.0.1:9222"
 
 
 class TestScreenDetection:
@@ -170,6 +175,39 @@ class TestBrowserSession:
             mock_launch.assert_called_once()
 
     @pytest.mark.asyncio
+    async def test_launch_with_cdp_endpoint_reuses_first_context(self):
+        session = BrowserSession()
+        cfg = SessionConfig(cdp_endpoint="http://127.0.0.1:9222")
+
+        mock_existing_page = _make_mock_page()
+        mock_context = AsyncMock()
+        mock_context.pages = [mock_existing_page]
+        mock_context.new_page = AsyncMock()
+
+        mock_browser = _make_mock_browser()
+        mock_browser.contexts = [mock_context]
+
+        mock_playwright = AsyncMock()
+        mock_playwright.chromium.connect_over_cdp = AsyncMock(return_value=mock_browser)
+
+        mock_manager = MagicMock()
+        mock_manager.start = AsyncMock(return_value=mock_playwright)
+
+        with patch("cloakbrowsermcp.session.async_playwright", return_value=mock_manager) as mock_async_playwright:
+            await session.launch(cfg)
+            page_id = await session.new_page(reuse_existing=True)
+
+            mock_async_playwright.assert_called_once()
+            mock_playwright.chromium.connect_over_cdp.assert_awaited_once_with("http://127.0.0.1:9222")
+            assert session.is_running is True
+            assert session.pages[page_id] is mock_existing_page
+            mock_context.new_page.assert_not_called()
+
+            await session.close()
+            mock_playwright.stop.assert_awaited_once()
+            mock_browser.close.assert_not_called()
+
+    @pytest.mark.asyncio
     async def test_launch_with_fingerprint_seed(self):
         session = BrowserSession()
         cfg = SessionConfig(fingerprint_seed="42069")
@@ -227,6 +265,68 @@ class TestBrowserSession:
             assert session.pages[page_id] is mock_page
             # Console capture should be set up
             assert mock_page.on.call_count >= 2  # console + pageerror
+
+    @pytest.mark.asyncio
+    async def test_new_page_can_reuse_source_page_context(self):
+        session = BrowserSession()
+        cfg = SessionConfig()
+
+        with patch("cloakbrowsermcp.session.launch_async") as mock_launch:
+            mock_browser = _make_mock_browser()
+            mock_page_1 = _make_mock_page()
+            mock_page_2 = _make_mock_page()
+
+            mock_context = AsyncMock()
+            mock_context.new_page = AsyncMock(side_effect=[mock_page_1, mock_page_2])
+            mock_page_1.context = mock_context
+            mock_page_2.context = mock_context
+            mock_browser.new_context = AsyncMock(return_value=mock_context)
+
+            mock_launch.return_value = mock_browser
+
+            await session.launch(cfg)
+            source_page_id = await session.new_page()
+            same_context_page_id = await session.new_page(
+                same_context=True,
+                source_page_id=source_page_id,
+            )
+
+            assert session.pages[source_page_id] is mock_page_1
+            assert session.pages[same_context_page_id] is mock_page_2
+            mock_browser.new_context.assert_called_once()
+            assert mock_context.new_page.await_count == 2
+
+    @pytest.mark.asyncio
+    async def test_register_existing_pages_tracks_untracked_popup(self):
+        session = BrowserSession()
+        cfg = SessionConfig()
+
+        with patch("cloakbrowsermcp.session.launch_async") as mock_launch:
+            mock_browser = _make_mock_browser()
+            mock_page = _make_mock_page()
+            mock_popup = _make_mock_page()
+            mock_popup.url = "https://chatgpt.com/"
+
+            mock_context = AsyncMock()
+            mock_context.pages = [mock_page, mock_popup]
+            mock_context.new_page = AsyncMock(return_value=mock_page)
+            mock_page.context = mock_context
+            mock_popup.context = mock_context
+            mock_browser.new_context = AsyncMock(return_value=mock_context)
+            mock_browser.contexts = [mock_context]
+
+            mock_launch.return_value = mock_browser
+
+            await session.launch(cfg)
+            tracked_page_id = await session.new_page()
+            registered = session.register_existing_pages()
+
+            assert session.pages[tracked_page_id] is mock_page
+            assert len(registered) == 1
+            assert registered[0]["url"] == "https://chatgpt.com/"
+            assert len(session.pages) == 2
+            assert session.pages[registered[0]["page_id"]] is mock_popup
+            assert mock_popup.on.call_count >= 2
 
     @pytest.mark.asyncio
     async def test_close_page(self):

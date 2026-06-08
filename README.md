@@ -126,6 +126,7 @@ All anti-detection features are **ON by default**:
 | `cloak_wait` | Wait for page to settle |
 | `cloak_evaluate` | Execute JavaScript in page |
 | `cloak_new_page` | Open new page/tab |
+| `cloak_register_existing_pages` | Register untracked tabs/popups opened outside MCP |
 | `cloak_list_pages` | List all open pages |
 | `cloak_close_page` | Close a specific page |
 
@@ -175,8 +176,22 @@ cloak_launch(
     geoip=False,          # Auto-detect from proxy IP
     fingerprint_seed="my-identity",  # Consistent fingerprint across sessions
     user_data_dir="/path",  # Persistent profile
+    cdp_endpoint="http://127.0.0.1:9222",  # Attach to existing Chromium
 )
 ```
+
+`cdp_endpoint` attaches to an already-running Chromium remote debugging
+endpoint and reuses the first existing context/page when available. Launch-only
+settings such as `headless`, `humanize`, `stealth_args`, `proxy`, `locale`, and
+`timezone` do not modify a browser that is already running. `cloak_close()`
+disconnects the MCP session without closing that external browser process.
+
+`cloak_new_page(url, page_id, same_context=True)` opens the new tab in the same
+browser context as `page_id` when provided, or the first tracked page otherwise.
+This shares cookies/localStorage/session with the source tab. If a tab or popup
+is opened by page JavaScript, OAuth, target `_blank`, or manual user action,
+call `cloak_register_existing_pages()` to assign MCP `page_id` values to those
+existing tabs.
 
 ## Architecture
 

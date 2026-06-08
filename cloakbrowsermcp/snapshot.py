@@ -597,7 +597,7 @@ def _compress_snapshot(text: str, max_length: int) -> tuple[str, bool]:
         return result, True
 
     # --- Pass 3: Drop img lines without refs ---
-    kept3 = [l for l in kept2 if not (l.strip().startswith("img") and not ref_pat.search(l))]
+    kept3 = [line for line in kept2 if not (line.strip().startswith("img") and not ref_pat.search(line))]
     result = "\n".join(header_lines + kept3)
     if len(result) <= max_length:
         return result, True

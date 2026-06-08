@@ -28,8 +28,7 @@ from .session import (
 from .snapshot import take_snapshot, resolve_ref
 from .markdown import extract_markdown
 from .vision import take_annotated_screenshot
-from .waiting import smart_navigate, retry_action, wait_for_settle, detect_loading
-from .stealth import get_stealth_info
+from .waiting import smart_navigate, retry_action, wait_for_settle
 from .network import (
     setup_intercept,
     remove_intercept,
@@ -111,7 +110,7 @@ async def _safe(handler, *args, **kwargs) -> dict[str, Any]:
             _session._force_cleanup()
             logger.warning("Browser connection lost: %s", e)
             return _err(
-                f"Browser session lost. Call cloak_launch() to start a new session.",
+                "Browser session lost. Call cloak_launch() to start a new session.",
                 hint="Call cloak_launch() to restart.",
             )
         logger.exception("Tool error: %s", type(e).__name__)
@@ -202,19 +201,21 @@ async def _do_launch(params: dict) -> dict:
         extra_args=params.get("extra_args", []),
         fingerprint_seed=params.get("fingerprint_seed"),
         user_data_dir=params.get("user_data_dir"),
+        cdp_endpoint=params.get("cdp_endpoint"),
         viewport={"width": vp_w, "height": vp_h},
         color_scheme=params.get("color_scheme"),
         user_agent=params.get("user_agent"),
     )
 
     await _session.launch(cfg)
-    page_id = await _session.new_page()
+    page_id = await _session.new_page(reuse_existing=bool(cfg.cdp_endpoint))
 
     return {
         "status": "launched",
         "page_id": page_id,
         "stealth": True,
         "humanize": cfg.humanize,
+        "cdp": bool(cfg.cdp_endpoint),
         "hint": "Next: call cloak_navigate(page_id, url) to visit a page.",
     }
 
@@ -350,6 +351,7 @@ def create_server(caps: set[str] | None = None) -> FastMCP:
         geoip: bool = False,
         fingerprint_seed: str | None = None,
         user_data_dir: str | None = None,
+        cdp_endpoint: str | None = None,
         viewport_width: int | None = None,
         viewport_height: int | None = None,
         color_scheme: str | None = None,
@@ -372,6 +374,10 @@ def create_server(caps: set[str] | None = None) -> FastMCP:
             geoip: Auto-detect timezone/locale from proxy IP.
             fingerprint_seed: Fixed seed for consistent identity across sessions.
             user_data_dir: Persistent profile path (cookies/localStorage survive restarts).
+            cdp_endpoint: Attach to an existing Chromium remote debugging endpoint
+                (e.g. 'http://127.0.0.1:9222'). Launch-only options like
+                headless, humanize, stealth_args, proxy, locale, and timezone do
+                not modify an already-running browser.
             viewport_width: Viewport width in pixels (default: 1920 headless; 1280 headed fallback, or auto-detected).
             viewport_height: Viewport height in pixels (default: 947 headless; 800 headed fallback, or auto-detected).
             color_scheme: 'light', 'dark', or 'no-preference'.
@@ -383,6 +389,7 @@ def create_server(caps: set[str] | None = None) -> FastMCP:
             "human_preset": human_preset, "stealth_args": stealth_args,
             "timezone": timezone, "locale": locale, "geoip": geoip,
             "fingerprint_seed": fingerprint_seed, "user_data_dir": user_data_dir,
+            "cdp_endpoint": cdp_endpoint,
             "viewport_width": viewport_width, "viewport_height": viewport_height,
             "color_scheme": color_scheme, "user_agent": user_agent,
             "extra_args": extra_args or [],
@@ -682,20 +689,46 @@ def create_server(caps: set[str] | None = None) -> FastMCP:
     # --- Page management ---
 
     @mcp.tool()
-    async def cloak_new_page(url: str | None = None) -> dict[str, Any]:
+    async def cloak_new_page(
+        url: str | None = None,
+        page_id: str | None = None,
+        same_context: bool = True,
+    ) -> dict[str, Any]:
         """Open a new browser page/tab. Optionally navigate to a URL.
+
+        By default, the new tab opens in the same browser context as an
+        existing tracked page so cookies/localStorage/session are shared.
 
         Args:
             url: URL to navigate to after creating the page.
+            page_id: Optional source page whose browser context should be reused.
+            same_context: Reuse an existing browser context when possible (default: True).
         """
-        async def _new(u):
-            pid = await _session.new_page()
+        async def _new(u, source_pid, reuse_context):
+            pid = await _session.new_page(same_context=reuse_context, source_page_id=source_pid)
             page = _session.get_page(pid)
             if u:
                 await smart_navigate(page, u)
-            return {"page_id": pid, "url": page.url}
+            return {"page_id": pid, "url": page.url, "same_context": reuse_context}
 
-        return await _safe(_new, url)
+        return await _safe(_new, url, page_id, same_context)
+
+    @mcp.tool()
+    async def cloak_register_existing_pages() -> dict[str, Any]:
+        """Register existing untracked tabs/popups and return their MCP page IDs.
+
+        Use this after a page opens a popup/tab via window.open, target=_blank,
+        OAuth redirects, or manual user interaction outside MCP tracking.
+        """
+        async def _register():
+            registered = _session.register_existing_pages()
+            return {
+                "status": "registered",
+                "registered": registered,
+                "pages": _session.list_pages(),
+            }
+
+        return await _safe(_register)
 
     @mcp.tool()
     async def cloak_list_pages() -> dict[str, Any]:

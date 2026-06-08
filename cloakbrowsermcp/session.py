@@ -13,6 +13,8 @@ import logging
 from dataclasses import dataclass, field
 from typing import Any
 
+from playwright.async_api import async_playwright
+
 from cloakbrowser import launch_async, launch_persistent_context_async
 
 logger = logging.getLogger("cloakbrowsermcp")
@@ -143,6 +145,7 @@ class SessionConfig:
     extra_args: list[str] = field(default_factory=list)
     fingerprint_seed: str | None = None
     user_data_dir: str | None = None
+    cdp_endpoint: str | None = None
     color_scheme: str | None = None
     user_agent: str | None = None
     backend: str | None = None
@@ -159,7 +162,9 @@ class BrowserSession:
     def __init__(self) -> None:
         self._browser: Any | None = None
         self._context: Any | None = None
+        self._playwright: Any | None = None
         self._is_persistent: bool = False
+        self._is_cdp: bool = False
         self.pages: dict[str, Any] = {}
         self.config: SessionConfig | None = None
         self._route_handlers: dict[str, Any] = {}
@@ -336,8 +341,10 @@ class BrowserSession:
         self._downloads.clear()
         self._browser = None
         self._context = None
+        self._playwright = None
         self.config = None
         self._is_persistent = False
+        self._is_cdp = False
         logger.info("Stale browser session cleaned up")
 
     # -----------------------------------------------------------------------
@@ -363,9 +370,25 @@ class BrowserSession:
         if config.fingerprint_seed:
             args.append(f"--fingerprint={config.fingerprint_seed}")
 
-        if config.user_data_dir:
+        if config.cdp_endpoint:
+            # CDP attach mode. This connects to an already-running browser and
+            # reuses its first context/page when available.
+            self._is_persistent = False
+            self._is_cdp = True
+            self._playwright = await async_playwright().start()
+            browser = await self._playwright.chromium.connect_over_cdp(config.cdp_endpoint)
+            self._browser = browser
+            if browser.contexts:
+                self._context = browser.contexts[0]
+            else:
+                self._context = await browser.new_context(
+                    viewport=config.viewport,
+                    accept_downloads=True,
+                )
+        elif config.user_data_dir:
             # Persistent context mode
             self._is_persistent = True
+            self._is_cdp = False
             ctx = await launch_persistent_context_async(
                 user_data_dir=config.user_data_dir,
                 headless=config.headless,
@@ -388,6 +411,7 @@ class BrowserSession:
         else:
             # Standard browser mode
             self._is_persistent = False
+            self._is_cdp = False
             browser = await launch_async(
                 headless=config.headless,
                 proxy=config.proxy,
@@ -405,10 +429,11 @@ class BrowserSession:
             self._context = None
 
         logger.info(
-            "CloakBrowser launched (headless=%s, humanize=%s, persistent=%s)",
+            "CloakBrowser launched (headless=%s, humanize=%s, persistent=%s, cdp=%s)",
             config.headless,
             config.humanize,
             self._is_persistent,
+            self._is_cdp,
         )
 
     async def close(self) -> None:
@@ -416,12 +441,14 @@ class BrowserSession:
         if not self.is_running:
             return
 
-        # Close all tracked pages
-        for page_id in list(self.pages.keys()):
-            try:
-                await self.pages[page_id].close()
-            except Exception:
-                pass
+        # In CDP attach mode, tracked pages belong to an external browser. Do
+        # not close them; just drop MCP tracking and disconnect below.
+        if not self._is_cdp:
+            for page_id in list(self.pages.keys()):
+                try:
+                    await self.pages[page_id].close()
+                except Exception:
+                    pass
         self.pages.clear()
         self._route_handlers.clear()
         self._refs.clear()
@@ -429,7 +456,12 @@ class BrowserSession:
 
         # Close browser/context
         try:
-            if self._is_persistent and self._context:
+            if self._is_cdp:
+                # Stop the Playwright driver connection without closing the
+                # external browser process connected through CDP.
+                if self._playwright:
+                    await self._playwright.stop()
+            elif self._is_persistent and self._context:
                 await self._context.close()
             elif self._browser:
                 await self._browser.close()
@@ -438,17 +470,98 @@ class BrowserSession:
         finally:
             self._browser = None
             self._context = None
+            self._playwright = None
             self.config = None
+            self._is_cdp = False
+            self._is_persistent = False
 
         logger.info("CloakBrowser closed")
 
-    async def new_page(self) -> str:
+    def _is_tracked_page(self, page: Any) -> bool:
+        """Return whether a Playwright page already has an MCP page_id."""
+        return any(tracked_page is page for tracked_page in self.pages.values())
+
+    def _track_page(self, page: Any) -> str:
+        """Register a Playwright page and return its MCP page_id."""
+        page_id = f"page_{uuid.uuid4().hex[:8]}"
+        self.pages[page_id] = page
+        self._setup_console_capture(page_id, page)
+        logger.debug("Page tracked: %s", page_id)
+        return page_id
+
+    def _known_contexts(self) -> list[Any]:
+        """Return browser contexts visible to this session without duplicates."""
+        contexts: list[Any] = []
+        if self._context is not None:
+            contexts.append(self._context)
+
+        browser_contexts = getattr(self._browser, "contexts", None)
+        if browser_contexts:
+            for context in browser_contexts:
+                if not any(existing is context for existing in contexts):
+                    contexts.append(context)
+
+        return contexts
+
+    def register_existing_pages(self) -> list[dict[str, str]]:
+        """Register untracked pages/popups that already exist in known contexts."""
+        self._check_browser_alive()
+        if not self.is_running:
+            raise BrowserSessionError("Browser is not running. Call launch_browser() first.")
+
+        registered: list[dict[str, str]] = []
+        for context in self._known_contexts():
+            for page in getattr(context, "pages", []):
+                if self._is_tracked_page(page) or page.is_closed():
+                    continue
+                page_id = self._track_page(page)
+                registered.append({
+                    "page_id": page_id,
+                    "url": page.url,
+                })
+        return registered
+
+    async def new_page(
+        self,
+        reuse_existing: bool = False,
+        same_context: bool = False,
+        source_page_id: str | None = None,
+    ) -> str:
         """Create a new page and return its ID."""
         self._check_browser_alive()
         if not self.is_running:
             raise BrowserSessionError("Browser is not running. Call launch_browser() first.")
 
-        if self._is_persistent:
+        if reuse_existing:
+            for context in self._known_contexts():
+                for existing_page in getattr(context, "pages", []):
+                    if self._is_tracked_page(existing_page) or existing_page.is_closed():
+                        continue
+                    page = existing_page
+                    break
+                else:
+                    continue
+                break
+            else:
+                context = self._context or (self._known_contexts()[0] if self._known_contexts() else None)
+                if context is None:
+                    raise BrowserSessionError("No browser context is available for creating a page.")
+                page = await context.new_page()
+        elif same_context or source_page_id:
+            if source_page_id:
+                context = self.get_page(source_page_id).context
+            elif self.pages:
+                context = next(iter(self.pages.values())).context
+            elif self._context:
+                context = self._context
+            else:
+                contexts = self._known_contexts()
+                context = contexts[0] if contexts else None
+
+            if context is None:
+                raise BrowserSessionError("No browser context is available for creating a same-context page.")
+            page = await context.new_page()
+        elif self._is_persistent or self._is_cdp:
             page = await self._context.new_page()
         else:
             # Create a new context for each page for isolation
@@ -458,14 +571,7 @@ class BrowserSession:
             )
             page = await context.new_page()
 
-        page_id = f"page_{uuid.uuid4().hex[:8]}"
-        self.pages[page_id] = page
-
-        # Set up console capture
-        self._setup_console_capture(page_id, page)
-
-        logger.debug("New page created: %s", page_id)
-        return page_id
+        return self._track_page(page)
 
     def get_page(self, page_id: str) -> Any:
         """Get a page by its ID.
