@@ -23,11 +23,47 @@ CloakBrowser is a source-level patched Chromium that passes Cloudflare Turnstile
 
 ## Quick Start
 
-### Install
+### Install for Codex and Claude Code
+
+Use the fork installer when you want the CDP, same-context tab, and
+`cloak_register_existing_pages()` patches:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/truongtv22/CloakMCP/main/setup.sh | bash
+```
+
+The installer:
+
+- Clones this repo to `~/.cloakbrowsermcp`
+- Creates `~/.cloakbrowsermcp/.venv`
+- Installs the MCP package from source
+- Adds `cloakmcp` to `~/.codex/config.toml` for Codex
+- Adds `cloakmcp` to Claude Code with `claude mcp add -s user`
+
+Restart Codex or Claude Code after installation, then verify:
+
+```bash
+codex mcp list
+claude mcp list
+```
+
+Useful installer options:
+
+```bash
+CLOAKMCP_RUN_TESTS=1 bash setup.sh
+CLOAKMCP_SKIP_CODEX=1 bash setup.sh
+CLOAKMCP_SKIP_CLAUDE=1 bash setup.sh
+CLOAKMCP_CLAUDE_SCOPE=local bash setup.sh
+CLOAKMCP_DIR="$HOME/.cloakbrowsermcp" bash setup.sh
+```
+
+### Install from PyPI
 
 ```bash
 pip install cloakbrowsermcp
 ```
+
+PyPI may not include the fork-only patches until they are released upstream.
 
 ### Use with Claude Desktop
 

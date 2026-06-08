@@ -1,23 +1,27 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# CloakMCP installer for Codex.
+# CloakMCP installer for Codex and Claude Code.
 # Usage:
 #   curl -fsSL https://raw.githubusercontent.com/truongtv22/CloakMCP/main/setup.sh | bash
 #
 # Optional environment variables:
 #   CLOAKMCP_REPO=https://github.com/truongtv22/CloakMCP.git
-#   CLOAKMCP_DIR="$HOME/.codex/mcp/cloakmcp"
+#   CLOAKMCP_DIR="$HOME/.cloakbrowsermcp"
 #   CODEX_CONFIG="$HOME/.codex/config.toml"
 #   CLOAKMCP_SERVER_NAME=cloakmcp
+#   CLOAKMCP_SKIP_CODEX=1
+#   CLOAKMCP_SKIP_CLAUDE=1
+#   CLOAKMCP_CLAUDE_SCOPE=user
 #   CLOAKMCP_RUN_TESTS=1
 #   CLOAKMCP_SKIP_BINARY=1
 #   CLOAKMCP_SKIP_PLAYWRIGHT_DEPS=1
 
 REPO="${CLOAKMCP_REPO:-https://github.com/truongtv22/CloakMCP.git}"
-INSTALL_DIR="${CLOAKMCP_DIR:-$HOME/.codex/mcp/cloakmcp}"
+INSTALL_DIR="${CLOAKMCP_DIR:-$HOME/.cloakbrowsermcp}"
 CODEX_CONFIG="${CODEX_CONFIG:-$HOME/.codex/config.toml}"
 SERVER_NAME="${CLOAKMCP_SERVER_NAME:-cloakmcp}"
+CLAUDE_SCOPE="${CLOAKMCP_CLAUDE_SCOPE:-user}"
 
 RED='\033[0;31m'
 GREEN='\033[0;32m'
@@ -33,7 +37,7 @@ fail() { printf "%b[FAIL]%b %s\n" "$RED" "$NC" "$*" >&2; exit 1; }
 
 print_header() {
     printf "\n%b╔══════════════════════════════════════════╗%b\n" "$BOLD" "$NC"
-    printf "%b║        CloakMCP Setup for Codex          ║%b\n" "$BOLD" "$NC"
+    printf "%b║   CloakMCP Setup for Codex/Claude Code   ║%b\n" "$BOLD" "$NC"
     printf "%b║  Stealth browser automation MCP          ║%b\n" "$BOLD" "$NC"
     printf "%b╚══════════════════════════════════════════╝%b\n\n" "$BOLD" "$NC"
 }
@@ -154,6 +158,11 @@ escape_sed_replacement() {
 }
 
 write_codex_config() {
+    if [ "${CLOAKMCP_SKIP_CODEX:-0}" = "1" ]; then
+        warn "Skipping Codex config because CLOAKMCP_SKIP_CODEX=1"
+        return
+    fi
+
     local venv_python="$INSTALL_DIR/.venv/bin/python"
     local config_dir
     config_dir="$(dirname "$CODEX_CONFIG")"
@@ -182,16 +191,39 @@ write_codex_config() {
     info "Server name: $escaped_server"
 }
 
+write_claude_code_config() {
+    if [ "${CLOAKMCP_SKIP_CLAUDE:-0}" = "1" ]; then
+        warn "Skipping Claude Code config because CLOAKMCP_SKIP_CLAUDE=1"
+        return
+    fi
+
+    if ! command -v claude >/dev/null 2>&1; then
+        warn "Claude Code CLI not found. Configure later with:"
+        warn "claude mcp add -s $CLAUDE_SCOPE $SERVER_NAME -- $INSTALL_DIR/.venv/bin/python -m cloakbrowsermcp.server --caps all"
+        return
+    fi
+
+    local venv_python="$INSTALL_DIR/.venv/bin/python"
+    info "Configuring Claude Code MCP server with scope '$CLAUDE_SCOPE'"
+    claude mcp remove -s "$CLAUDE_SCOPE" "$SERVER_NAME" >/dev/null 2>&1 || true
+    claude mcp add -s "$CLAUDE_SCOPE" "$SERVER_NAME" -- \
+        "$venv_python" -m cloakbrowsermcp.server --caps all
+    ok "Claude Code MCP config updated"
+}
+
 print_done() {
     local wrapper="$INSTALL_DIR/bin/cloakbrowsermcp"
 
     printf "\n%b%s%b\n\n" "$GREEN$BOLD" "CloakMCP is ready." "$NC"
+    printf "%bInstall dir:%b %s\n" "$BOLD" "$NC" "$INSTALL_DIR"
     printf "%bCodex config:%b %s\n" "$BOLD" "$NC" "$CODEX_CONFIG"
+    printf "%bClaude Code scope:%b %s\n" "$BOLD" "$NC" "$CLAUDE_SCOPE"
     printf "%bServer:%b %s\n" "$BOLD" "$NC" "$SERVER_NAME"
     printf "%bCommand:%b %s/.venv/bin/python -m cloakbrowsermcp.server --caps all\n" "$BOLD" "$NC" "$INSTALL_DIR"
     printf "%bWrapper:%b %s\n\n" "$BOLD" "$NC" "$wrapper"
-    printf "Restart Codex, then verify:\n"
+    printf "Restart Codex/Claude Code, then verify:\n"
     printf "  codex mcp list\n\n"
+    printf "  claude mcp list\n\n"
     printf "Expected tools include:\n"
     printf "  cloak_launch(cdp_endpoint=...)\n"
     printf "  cloak_new_page(page_id=..., same_context=true)\n"
@@ -215,6 +247,7 @@ main() {
     run_smoke_tests
     write_wrapper
     write_codex_config
+    write_claude_code_config
     print_done
 }
 
