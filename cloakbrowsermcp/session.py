@@ -142,6 +142,7 @@ class SessionConfig:
     locale: str | None = None
     geoip: bool = False
     viewport: dict = field(default_factory=lambda: {"width": 1920, "height": 947})
+    no_viewport: bool = False
     extra_args: list[str] = field(default_factory=list)
     fingerprint_seed: str | None = None
     user_data_dir: str | None = None
@@ -369,6 +370,10 @@ class BrowserSession:
         args = list(config.extra_args)
         if config.fingerprint_seed:
             args.append(f"--fingerprint={config.fingerprint_seed}")
+        if config.no_viewport and config.viewport and not any(arg.startswith("--window-size=") for arg in args):
+            args.append(f"--window-size={config.viewport['width']},{config.viewport['height']}")
+
+        context_viewport = None if config.no_viewport else config.viewport
 
         if config.cdp_endpoint:
             # CDP attach mode. This connects to an already-running browser and
@@ -382,7 +387,8 @@ class BrowserSession:
                 self._context = browser.contexts[0]
             else:
                 self._context = await browser.new_context(
-                    viewport=config.viewport,
+                    viewport=context_viewport,
+                    no_viewport=config.no_viewport,
                     accept_downloads=True,
                 )
         elif config.user_data_dir:
@@ -401,7 +407,8 @@ class BrowserSession:
                 humanize=config.humanize,
                 human_preset=config.human_preset,
                 human_config=config.human_config,
-                viewport=config.viewport,
+                viewport=context_viewport,
+                no_viewport=config.no_viewport,
                 user_agent=config.user_agent,
                 color_scheme=config.color_scheme,
                 backend=config.backend,
@@ -566,7 +573,8 @@ class BrowserSession:
         else:
             # Create a new context for each page for isolation
             context = await self._browser.new_context(
-                viewport=self.config.viewport if self.config else None,
+                viewport=None if self.config and self.config.no_viewport else self.config.viewport if self.config else None,
+                no_viewport=self.config.no_viewport if self.config else None,
                 accept_downloads=True,
             )
             page = await context.new_page()

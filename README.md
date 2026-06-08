@@ -225,8 +225,14 @@ cloak_launch(
     fingerprint_seed="my-identity",  # Consistent fingerprint across sessions
     user_data_dir="/path",  # Persistent profile
     cdp_endpoint="http://127.0.0.1:9222",  # Attach to existing Chromium
+    no_viewport=True,      # Headed mode: page follows native window resize
 )
 ```
+
+In headed mode, `no_viewport` defaults to `True` when
+`viewport_width`/`viewport_height` are not set. This lets the web content resize
+with the native browser window. Set `viewport_width` and `viewport_height`, or
+pass `no_viewport=False`, when a fixed automation viewport is required.
 
 `cdp_endpoint` attaches to an already-running Chromium remote debugging
 endpoint and reuses the first existing context/page when available. Launch-only

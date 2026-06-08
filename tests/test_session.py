@@ -20,6 +20,7 @@ class TestSessionConfig:
         assert cfg.locale is None
         assert cfg.geoip is False
         assert cfg.viewport == {"width": 1920, "height": 947}
+        assert cfg.no_viewport is False
         assert cfg.extra_args == []
         assert cfg.cdp_endpoint is None
 
@@ -175,6 +176,22 @@ class TestBrowserSession:
             mock_launch.assert_called_once()
 
     @pytest.mark.asyncio
+    async def test_launch_persistent_context_with_no_viewport(self):
+        session = BrowserSession()
+        cfg = SessionConfig(user_data_dir="/tmp/profile", headless=False, no_viewport=True)
+
+        with patch("cloakbrowsermcp.session.launch_persistent_context_async") as mock_launch:
+            mock_ctx = AsyncMock()
+            mock_launch.return_value = mock_ctx
+
+            await session.launch(cfg)
+
+            call_kwargs = mock_launch.call_args.kwargs
+            assert call_kwargs["viewport"] is None
+            assert call_kwargs["no_viewport"] is True
+            assert "--window-size=1920,947" in call_kwargs["args"]
+
+    @pytest.mark.asyncio
     async def test_launch_with_cdp_endpoint_reuses_first_context(self):
         session = BrowserSession()
         cfg = SessionConfig(cdp_endpoint="http://127.0.0.1:9222")
@@ -265,6 +282,30 @@ class TestBrowserSession:
             assert session.pages[page_id] is mock_page
             # Console capture should be set up
             assert mock_page.on.call_count >= 2  # console + pageerror
+
+    @pytest.mark.asyncio
+    async def test_new_page_with_no_viewport_uses_resizable_context(self):
+        session = BrowserSession()
+        cfg = SessionConfig(headless=False, no_viewport=True, viewport={"width": 1280, "height": 800})
+
+        with patch("cloakbrowsermcp.session.launch_async") as mock_launch:
+            mock_browser = _make_mock_browser()
+            mock_page = _make_mock_page()
+
+            mock_context = AsyncMock()
+            mock_context.new_page = AsyncMock(return_value=mock_page)
+            mock_browser.new_context = AsyncMock(return_value=mock_context)
+
+            mock_launch.return_value = mock_browser
+
+            await session.launch(cfg)
+            await session.new_page()
+
+            launch_kwargs = mock_launch.call_args.kwargs
+            assert "--window-size=1280,800" in launch_kwargs["args"]
+            context_kwargs = mock_browser.new_context.call_args.kwargs
+            assert context_kwargs["viewport"] is None
+            assert context_kwargs["no_viewport"] is True
 
     @pytest.mark.asyncio
     async def test_new_page_can_reuse_source_page_context(self):

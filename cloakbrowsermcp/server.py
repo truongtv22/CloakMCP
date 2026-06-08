@@ -169,11 +169,18 @@ async def _do_launch(params: dict) -> dict:
     headless = params.get("headless", True)
     explicit_w = params.get("viewport_width")
     explicit_h = params.get("viewport_height")
+    requested_no_viewport = params.get("no_viewport")
 
     if headless:
         vp_w = explicit_w or 1920
         vp_h = explicit_h or 947
+        no_viewport = False
     else:
+        no_viewport = (
+            requested_no_viewport
+            if requested_no_viewport is not None
+            else explicit_w is None and explicit_h is None
+        )
         # Headed mode: auto-detect screen size if user didn't specify
         if explicit_w and explicit_h:
             vp_w, vp_h = explicit_w, explicit_h
@@ -203,6 +210,7 @@ async def _do_launch(params: dict) -> dict:
         user_data_dir=params.get("user_data_dir"),
         cdp_endpoint=params.get("cdp_endpoint"),
         viewport={"width": vp_w, "height": vp_h},
+        no_viewport=no_viewport,
         color_scheme=params.get("color_scheme"),
         user_agent=params.get("user_agent"),
     )
@@ -216,6 +224,7 @@ async def _do_launch(params: dict) -> dict:
         "stealth": True,
         "humanize": cfg.humanize,
         "cdp": bool(cfg.cdp_endpoint),
+        "no_viewport": cfg.no_viewport,
         "hint": "Next: call cloak_navigate(page_id, url) to visit a page.",
     }
 
@@ -354,6 +363,7 @@ def create_server(caps: set[str] | None = None) -> FastMCP:
         cdp_endpoint: str | None = None,
         viewport_width: int | None = None,
         viewport_height: int | None = None,
+        no_viewport: bool | None = None,
         color_scheme: str | None = None,
         user_agent: str | None = None,
         extra_args: list[str] | None = None,
@@ -380,6 +390,9 @@ def create_server(caps: set[str] | None = None) -> FastMCP:
                 not modify an already-running browser.
             viewport_width: Viewport width in pixels (default: 1920 headless; 1280 headed fallback, or auto-detected).
             viewport_height: Viewport height in pixels (default: 947 headless; 800 headed fallback, or auto-detected).
+            no_viewport: Do not enforce a fixed viewport in headed mode, so
+                page content follows native window resizing. Defaults to True
+                for headed mode unless viewport_width/viewport_height is set.
             color_scheme: 'light', 'dark', or 'no-preference'.
             user_agent: Custom user agent override.
             extra_args: Additional Chromium CLI flags.
@@ -391,6 +404,7 @@ def create_server(caps: set[str] | None = None) -> FastMCP:
             "fingerprint_seed": fingerprint_seed, "user_data_dir": user_data_dir,
             "cdp_endpoint": cdp_endpoint,
             "viewport_width": viewport_width, "viewport_height": viewport_height,
+            "no_viewport": no_viewport,
             "color_scheme": color_scheme, "user_agent": user_agent,
             "extra_args": extra_args or [],
         })
