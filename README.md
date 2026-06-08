@@ -172,6 +172,7 @@ All anti-detection features are **ON by default**:
 | `cloak_press_key` | Press keyboard key |
 | `cloak_scroll` | Scroll page up/down |
 | `cloak_wait` | Wait for page to settle |
+| `cloak_sync_viewport_to_window` | Sync fixed viewport to native window size |
 | `cloak_evaluate` | Execute JavaScript in page |
 | `cloak_new_page` | Open new page/tab |
 | `cloak_register_existing_pages` | Register untracked tabs/popups opened outside MCP |
@@ -233,6 +234,11 @@ In headed mode, `no_viewport` defaults to `True` when
 `viewport_width`/`viewport_height` are not set. This lets the web content resize
 with the native browser window. Set `viewport_width` and `viewport_height`, or
 pass `no_viewport=False`, when a fixed automation viewport is required.
+
+If an existing fixed-viewport session has already been launched, call
+`cloak_sync_viewport_to_window(page_id)` after manually resizing the native
+browser window. It reads `window.outerWidth/outerHeight` and applies a matching
+Playwright viewport so the page layout catches up without relaunching.
 
 `cdp_endpoint` attaches to an already-running Chromium remote debugging
 endpoint and reuses the first existing context/page when available. Launch-only

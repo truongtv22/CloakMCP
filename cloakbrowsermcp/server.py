@@ -308,6 +308,38 @@ async def _do_check(page_id: str, ref: str, checked: bool) -> dict:
     return {"status": "checked" if checked else "unchecked", "ref": f"@{clean_ref}"}
 
 
+async def _do_sync_viewport_to_window(
+    page_id: str,
+    width: int | None = None,
+    height: int | None = None,
+    height_offset: int = 75,
+) -> dict[str, Any]:
+    """Resize Playwright's fixed viewport to match the native browser window."""
+    page = _session.get_page(page_id)
+    before = await page.evaluate(
+        "({innerW: window.innerWidth, innerH: window.innerHeight, "
+        "outerW: window.outerWidth, outerH: window.outerHeight})"
+    )
+
+    target_width = width or int(before.get("outerW") or before.get("innerW") or 1280)
+    target_height = height or int((before.get("outerH") or before.get("innerH") or 800) - height_offset)
+    target_width = max(100, target_width)
+    target_height = max(100, target_height)
+
+    await page.set_viewport_size({"width": target_width, "height": target_height})
+    after = await page.evaluate(
+        "({innerW: window.innerWidth, innerH: window.innerHeight, "
+        "outerW: window.outerWidth, outerH: window.outerHeight})"
+    )
+
+    return {
+        "status": "viewport_synced",
+        "viewport": {"width": target_width, "height": target_height},
+        "before": before,
+        "after": after,
+    }
+
+
 # ---------------------------------------------------------------------------
 # Server creation
 # ---------------------------------------------------------------------------
@@ -675,6 +707,26 @@ def create_server(caps: set[str] | None = None) -> FastMCP:
         """
         page = _session.get_page(page_id)
         return await _safe(wait_for_settle, page, timeout_ms=timeout_ms)
+
+    @mcp.tool()
+    async def cloak_sync_viewport_to_window(
+        page_id: str,
+        width: int | None = None,
+        height: int | None = None,
+        height_offset: int = 75,
+    ) -> dict[str, Any]:
+        """Sync a fixed Playwright viewport to the current native window size.
+
+        Use this as a fallback when a headed browser was launched with a fixed
+        viewport and manual window resizing does not resize page content.
+
+        Args:
+            page_id: Target page ID.
+            width: Optional explicit viewport width. Defaults to window.outerWidth.
+            height: Optional explicit viewport height. Defaults to window.outerHeight - height_offset.
+            height_offset: Browser chrome height to subtract when height is omitted.
+        """
+        return await _safe_snap(_do_sync_viewport_to_window, page_id, width, height, height_offset)
 
     # --- JavaScript ---
 
