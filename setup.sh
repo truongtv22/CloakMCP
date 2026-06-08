@@ -16,12 +16,23 @@ set -euo pipefail
 #   CLOAKMCP_RUN_TESTS=1
 #   CLOAKMCP_SKIP_BINARY=1
 #   CLOAKMCP_SKIP_PLAYWRIGHT_DEPS=1
+#
+# Commands:
+#   ./setup.sh --list-targets
+#   ./setup.sh --target codex
+#   ./setup.sh --target claude-code
+#   ./setup.sh --uninstall
+#   ./setup.sh --uninstall --target codex
+#   ./setup.sh --uninstall --target claude-code
 
 REPO="${CLOAKMCP_REPO:-https://github.com/truongtv22/CloakMCP.git}"
 INSTALL_DIR="${CLOAKMCP_DIR:-$HOME/.cloakbrowsermcp}"
 CODEX_CONFIG="${CODEX_CONFIG:-$HOME/.codex/config.toml}"
 SERVER_NAME="${CLOAKMCP_SERVER_NAME:-cloakmcp}"
 CLAUDE_SCOPE="${CLOAKMCP_CLAUDE_SCOPE:-user}"
+ACTION="install"
+TARGET_WAS_SPECIFIED=0
+TARGETS=()
 
 RED='\033[0;31m'
 GREEN='\033[0;32m'
@@ -34,6 +45,102 @@ info() { printf "%b[INFO]%b %s\n" "$CYAN" "$NC" "$*"; }
 ok() { printf "%b[OK]%b   %s\n" "$GREEN" "$NC" "$*"; }
 warn() { printf "%b[WARN]%b %s\n" "$YELLOW" "$NC" "$*"; }
 fail() { printf "%b[FAIL]%b %s\n" "$RED" "$NC" "$*" >&2; exit 1; }
+
+print_usage() {
+    cat <<EOF
+CloakMCP setup for Codex and Claude Code.
+
+Usage:
+  ./setup.sh [--target codex|claude-code]...
+  ./setup.sh --list-targets
+  ./setup.sh --uninstall [--target codex|claude-code]...
+
+Targets:
+  codex
+  claude-code
+
+Examples:
+  ./setup.sh
+  ./setup.sh --target codex
+  ./setup.sh --target claude-code
+  ./setup.sh --uninstall
+  ./setup.sh --uninstall --target codex
+  ./setup.sh --uninstall --target claude-code
+EOF
+}
+
+list_targets() {
+    printf "codex\n"
+    printf "claude-code\n"
+}
+
+add_target() {
+    local target="$1"
+    case "$target" in
+        codex|claude-code) ;;
+        *) fail "Unknown target '$target'. Run --list-targets." ;;
+    esac
+
+    local existing
+    for existing in ${TARGETS[@]+"${TARGETS[@]}"}; do
+        [ "$existing" = "$target" ] && return
+    done
+    TARGETS+=("$target")
+    TARGET_WAS_SPECIFIED=1
+}
+
+parse_args() {
+    while [ "$#" -gt 0 ]; do
+        case "$1" in
+            --list-targets)
+                list_targets
+                exit 0
+                ;;
+            --target)
+                [ "$#" -ge 2 ] || fail "--target requires one value. Run --list-targets."
+                shift
+                add_target "$1"
+                ;;
+            --uninstall)
+                ACTION="uninstall"
+                ;;
+            -h|--help)
+                print_usage
+                exit 0
+                ;;
+            *)
+                fail "Unknown argument '$1'. Run --help."
+                ;;
+        esac
+        shift
+    done
+
+    if [ "${#TARGETS[@]}" -eq 0 ]; then
+        TARGETS=(codex claude-code)
+    fi
+}
+
+has_target() {
+    local target="$1"
+    local selected
+    for selected in ${TARGETS[@]+"${TARGETS[@]}"}; do
+        [ "$selected" = "$target" ] && return 0
+    done
+    return 1
+}
+
+targets_display() {
+    local joined=""
+    local selected
+    for selected in ${TARGETS[@]+"${TARGETS[@]}"}; do
+        if [ -z "$joined" ]; then
+            joined="$selected"
+        else
+            joined="$joined,$selected"
+        fi
+    done
+    printf "%s" "$joined"
+}
 
 print_header() {
     printf "\n%b╔══════════════════════════════════════════╗%b\n" "$BOLD" "$NC"
@@ -158,6 +265,10 @@ escape_sed_replacement() {
 }
 
 write_codex_config() {
+    if ! has_target codex; then
+        return
+    fi
+
     if [ "${CLOAKMCP_SKIP_CODEX:-0}" = "1" ]; then
         warn "Skipping Codex config because CLOAKMCP_SKIP_CODEX=1"
         return
@@ -192,6 +303,10 @@ write_codex_config() {
 }
 
 write_claude_code_config() {
+    if ! has_target claude-code; then
+        return
+    fi
+
     if [ "${CLOAKMCP_SKIP_CLAUDE:-0}" = "1" ]; then
         warn "Skipping Claude Code config because CLOAKMCP_SKIP_CLAUDE=1"
         return
@@ -211,11 +326,79 @@ write_claude_code_config() {
     ok "Claude Code MCP config updated"
 }
 
+remove_codex_config() {
+    if ! has_target codex; then
+        return
+    fi
+
+    if [ ! -f "$CODEX_CONFIG" ]; then
+        ok "Codex config not found; nothing to remove"
+        return
+    fi
+
+    local tmp_file
+    tmp_file="$(mktemp)"
+    awk -v server="$SERVER_NAME" '
+        $0 == "[mcp_servers." server "]" { skip = 1; next }
+        skip && /^\[/ { skip = 0 }
+        !skip { print }
+    ' "$CODEX_CONFIG" > "$tmp_file"
+    mv "$tmp_file" "$CODEX_CONFIG"
+    ok "Removed Codex MCP config for $SERVER_NAME"
+}
+
+remove_claude_code_config() {
+    if ! has_target claude-code; then
+        return
+    fi
+
+    if ! command -v claude >/dev/null 2>&1; then
+        warn "Claude Code CLI not found; cannot remove Claude Code MCP config automatically"
+        return
+    fi
+
+    info "Removing Claude Code MCP server '$SERVER_NAME'"
+    if claude mcp remove -s "$CLAUDE_SCOPE" "$SERVER_NAME" >/dev/null 2>&1; then
+        ok "Removed Claude Code MCP config for $SERVER_NAME"
+    else
+        warn "Claude Code MCP config for $SERVER_NAME was not found at scope '$CLAUDE_SCOPE'"
+    fi
+}
+
+remove_install_dir_if_full_uninstall() {
+    if [ "$TARGET_WAS_SPECIFIED" -eq 1 ]; then
+        info "Keeping shared install dir because uninstall target was specified: $INSTALL_DIR"
+        return
+    fi
+
+    if [ ! -e "$INSTALL_DIR" ]; then
+        ok "Install dir not found; nothing to remove"
+        return
+    fi
+
+    case "$INSTALL_DIR" in
+        ""|"/"|"$HOME") fail "Refusing to remove unsafe install dir: $INSTALL_DIR" ;;
+    esac
+
+    rm -rf "$INSTALL_DIR"
+    ok "Removed shared install dir: $INSTALL_DIR"
+}
+
+run_uninstall() {
+    print_header
+    info "Uninstalling targets: $(targets_display)"
+    remove_codex_config
+    remove_claude_code_config
+    remove_install_dir_if_full_uninstall
+    ok "Uninstall complete"
+}
+
 print_done() {
     local wrapper="$INSTALL_DIR/bin/cloakbrowsermcp"
 
     printf "\n%b%s%b\n\n" "$GREEN$BOLD" "CloakMCP is ready." "$NC"
     printf "%bInstall dir:%b %s\n" "$BOLD" "$NC" "$INSTALL_DIR"
+    printf "%bTargets:%b %s\n" "$BOLD" "$NC" "$(targets_display)"
     printf "%bCodex config:%b %s\n" "$BOLD" "$NC" "$CODEX_CONFIG"
     printf "%bClaude Code scope:%b %s\n" "$BOLD" "$NC" "$CLAUDE_SCOPE"
     printf "%bServer:%b %s\n" "$BOLD" "$NC" "$SERVER_NAME"
@@ -231,6 +414,13 @@ print_done() {
 }
 
 main() {
+    parse_args "$@"
+
+    if [ "$ACTION" = "uninstall" ]; then
+        run_uninstall
+        return
+    fi
+
     print_header
 
     info "Checking prerequisites"

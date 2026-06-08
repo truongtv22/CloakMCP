@@ -50,12 +50,24 @@ claude mcp list
 Useful installer options:
 
 ```bash
+curl -fsSL https://raw.githubusercontent.com/truongtv22/CloakMCP/main/setup.sh | bash -s -- --target codex
+curl -fsSL https://raw.githubusercontent.com/truongtv22/CloakMCP/main/setup.sh | bash -s -- --target claude-code
+./setup.sh --list-targets
+./setup.sh --target codex
+./setup.sh --target claude-code
+./setup.sh --uninstall
+./setup.sh --uninstall --target codex
+./setup.sh --uninstall --target claude-code
 CLOAKMCP_RUN_TESTS=1 bash setup.sh
 CLOAKMCP_SKIP_CODEX=1 bash setup.sh
 CLOAKMCP_SKIP_CLAUDE=1 bash setup.sh
 CLOAKMCP_CLAUDE_SCOPE=local bash setup.sh
 CLOAKMCP_DIR="$HOME/.cloakbrowsermcp" bash setup.sh
 ```
+
+`--uninstall` without a target removes Codex config, Claude Code config, and the
+shared install directory. `--uninstall --target ...` removes only that target's
+MCP config and keeps `~/.cloakbrowsermcp` for the other client.
 
 ### Install from PyPI
 
